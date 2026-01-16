@@ -18,7 +18,6 @@ def get_google_sheet_client():
             gc = gspread.service_account(filename=SECRETS_FILE)
         # 模式二：雲端部署 (如果找不到檔案，找 Streamlit Secrets)
         else:
-            # 這裡對應 Streamlit Cloud 的 Secrets 設定
             if "gcp_service_account" in st.secrets:
                 creds = st.secrets["gcp_service_account"]
                 gc = gspread.service_account_from_dict(creds)
@@ -127,11 +126,17 @@ def main():
             if st.form_submit_button("登入"):
                 try:
                     user = login(username, password)
-                    if user == "resigned": st.error("⛔ 已離職")
+                    # === 修正的部分在這裡 ===
+                    # 我們先檢查 user 是不是字串 (str)，如果是字串且等於 "resigned" 才是離職
+                    # 這樣就不會拿 Series 去跟文字比對了
+                    if isinstance(user, str) and user == "resigned":
+                         st.error("⛔ 已離職")
                     elif user is not None:
                         st.session_state['user'] = user
                         st.rerun()
-                    else: st.error("錯誤")
+                    else: 
+                        st.error("帳號或密碼錯誤")
+                    # =====================
                 except Exception as e: st.error(f"系統錯誤: {e}")
         return
 
