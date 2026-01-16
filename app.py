@@ -9,20 +9,18 @@ import os
 GOOGLE_SHEET_NAME = "company_app_db"
 SECRETS_FILE = "secrets.json"
 
-# --- 1. 連線 Google Sheets (雙模組：本機/雲端) ---
-@st.cache_resource
+# --- 1. 連線 Google Sheets (加入 ttl 快取機制以減少 429 錯誤) ---
+@st.cache_resource(ttl=600)
 def get_google_sheet_client():
     try:
-        # 模式一：本機開發 (優先找 secrets.json)
         if os.path.exists(SECRETS_FILE):
             gc = gspread.service_account(filename=SECRETS_FILE)
-        # 模式二：雲端部署 (如果找不到檔案，找 Streamlit Secrets)
         else:
             if "gcp_service_account" in st.secrets:
                 creds = st.secrets["gcp_service_account"]
                 gc = gspread.service_account_from_dict(creds)
             else:
-                st.error("❌ 找不到金鑰！請確認 secrets.json 存在或已設定 Secrets。")
+                st.error("❌ 找不到金鑰！")
                 st.stop()
         
         sh = gc.open(GOOGLE_SHEET_NAME)
@@ -31,6 +29,7 @@ def get_google_sheet_client():
         st.error(f"連線失敗: {e}")
         st.stop()
 
+# 讀取資料不快取，確保資料最新，但寫入失敗時可重試
 def read_data(sheet_name):
     sh = get_google_sheet_client()
     try:
@@ -41,17 +40,31 @@ def read_data(sheet_name):
     except gspread.WorksheetNotFound:
         st.error(f"找不到分頁：{sheet_name}")
         st.stop()
+    except Exception as e:
+        # 如果遇到 429 錯誤，顯示友善提示
+        if "429" in str(e):
+            st.warning("⚠️ 系統忙碌中 (Google API 限流)，請稍等 1 分鐘後再試。")
+            st.stop()
+        else:
+            st.error(f"讀取錯誤: {e}")
+            st.stop()
 
 def append_data(sheet_name, row_data_list):
     sh = get_google_sheet_client()
-    worksheet = sh.worksheet(sheet_name)
-    worksheet.append_row(row_data_list)
+    try:
+        worksheet = sh.worksheet(sheet_name)
+        worksheet.append_row(row_data_list)
+    except Exception as e:
+        st.error(f"寫入失敗，請稍後再試: {e}")
 
 def overwrite_data(sheet_name, df):
     sh = get_google_sheet_client()
-    worksheet = sh.worksheet(sheet_name)
-    worksheet.clear()
-    worksheet.update([df.columns.values.tolist()] + df.values.tolist())
+    try:
+        worksheet = sh.worksheet(sheet_name)
+        worksheet.clear()
+        worksheet.update([df.columns.values.tolist()] + df.values.tolist())
+    except Exception as e:
+        st.error(f"更新失敗: {e}")
 
 # --- 2. 核心邏輯 ---
 def calculate_annual_leave_entitlement(onboard_date_str):
@@ -109,8 +122,9 @@ def login(username, password):
     if not df.empty:
         user = df[(df['username'] == username) & (df['password'] == password)]
         if not user.empty:
-            if user.iloc[0].get('status') == '離職': return "resigned"
-            return user.iloc[0]
+            found_user = user.iloc[0]
+            if str(found_user.get('status')) == '離職': return "resigned"
+            return found_user
     return None
 
 # --- 3. 主程式 ---
@@ -126,31 +140,33 @@ def main():
             if st.form_submit_button("登入"):
                 try:
                     user = login(username, password)
-                    # === 修正的部分在這裡 ===
-                    # 我們先檢查 user 是不是字串 (str)，如果是字串且等於 "resigned" 才是離職
-                    # 這樣就不會拿 Series 去跟文字比對了
-                    if isinstance(user, str) and user == "resigned":
-                         st.error("⛔ 已離職")
+                    if isinstance(user, str) and user == "resigned": st.error("⛔ 已離職")
                     elif user is not None:
                         st.session_state['user'] = user
                         st.rerun()
-                    else: 
-                        st.error("帳號或密碼錯誤")
-                    # =====================
+                    else: st.error("帳號或密碼錯誤")
                 except Exception as e: st.error(f"系統錯誤: {e}")
         return
 
     user = st.session_state['user']
-    user_full = get_user_info_full(user['username'])
+    # 這裡確保每次動作都重新抓取最新個資 (包含到職日)
+    user_full = get_user_info_full(user['username']) 
+    
     entitled = calculate_annual_leave_entitlement(user_full['onboard_date'])
     used = get_used_annual_leave(user['username'])
     my_balance = get_balance(user['username'])
     
+    # --- 側邊欄 ---
     st.sidebar.title(f"👤 {user_full['name']}")
     st.sidebar.text(f"{user_full['title']}")
+    # === 新增功能：顯示到職日 ===
+    st.sidebar.caption(f"📅 到職日: {user_full.get('onboard_date', '未設定')}")
+    st.sidebar.divider()
+    
     c1, c2 = st.sidebar.columns(2)
     c1.metric("補休", f"{my_balance}")
     c2.metric("特休剩", f"{entitled - used}", help=f"總 {entitled}")
+    
     if st.sidebar.button("登出"):
         st.session_state['user'] = None
         st.rerun()
