@@ -8,6 +8,8 @@ import os
 # --- ☁️ 雲端設定區 ---
 GOOGLE_SHEET_NAME = "company_app_db"
 SECRETS_FILE = "secrets.json"
+# === 設定顯示名稱 ===
+ORG_NAME = "社團法人為你社區服務協會"
 
 # --- 1. 連線設定 ---
 @st.cache_resource(ttl=600)
@@ -63,7 +65,7 @@ def overwrite_data(sheet_name, df):
     except Exception as e:
         st.error(f"更新失敗: {e}")
 
-# --- 2. 核心邏輯 (含防呆檢查) ---
+# --- 2. 核心邏輯 ---
 def calculate_annual_leave_entitlement(onboard_date_str):
     try:
         onboard = datetime.strptime(str(onboard_date_str), "%Y-%m-%d")
@@ -84,7 +86,6 @@ def calculate_annual_leave_entitlement(onboard_date_str):
 def get_used_annual_leave(username):
     df = read_data("leaves")
     if df.empty: return 0.0
-    # 防呆：如果忘記加 days 欄位
     if 'days' not in df.columns: return 0.0
     
     df['days'] = pd.to_numeric(df['days'], errors='coerce').fillna(0)
@@ -105,7 +106,6 @@ def get_balance(username):
 def update_balance(username, days_delta):
     df = read_data("balance")
     if df.empty: df = pd.DataFrame(columns=['username', 'balance'])
-    # 確保有 balance 欄位
     if 'balance' not in df.columns: df['balance'] = 0.0
     
     df['balance'] = pd.to_numeric(df['balance'], errors='coerce').fillna(0)
@@ -133,36 +133,27 @@ def login(username, password):
             return found_user
     return None
 
-# --- 工具：欄位中文化 ---
-def rename_columns_to_chinese(df, type='attendance'):
+def rename_columns_to_chinese(df):
     if df.empty: return df
-    
-    # 定義翻譯字典
     map_dict = {
-        'username': '員工帳號',
-        'name': '姓名',
-        'time': '打卡時間',
-        'action': '動作',
-        'type': '假別',
-        'start_date': '日期',
-        'days': '天數',
-        'session': '時段',
-        'reason': '事由',
-        'status': '狀態',
-        'manager_note': '主管備註',
-        'date': '日期',
-        'operator': '操作人'
+        'username': '員工帳號', 'name': '姓名', 'time': '打卡時間', 'action': '動作',
+        'type': '假別', 'start_date': '日期', 'days': '天數', 'session': '時段',
+        'reason': '事由', 'status': '狀態', 'manager_note': '主管備註',
+        'date': '日期', 'operator': '操作人'
     }
-    # 嘗試重新命名，如果欄位不存在會自動忽略
     return df.rename(columns=map_dict)
 
 # --- 3. 主程式 ---
 def main():
-    st.set_page_config(page_title="☁️ 雲端人資系統", page_icon="🌤️")
+    # 設定網頁標題 (瀏覽器籤頁顯示的文字)
+    st.set_page_config(page_title=ORG_NAME, page_icon="🏢")
+    
     if 'user' not in st.session_state: st.session_state['user'] = None
 
+    # === 登入畫面 ===
     if st.session_state['user'] is None:
-        st.title("🌤️ 雲端員工系統")
+        st.title(ORG_NAME) # 大標題改為協會名稱
+        st.subheader("☁️ 雲端人資系統")
         with st.form("login"):
             username = st.text_input("帳號")
             password = st.text_input("密碼", type='password')
@@ -177,6 +168,7 @@ def main():
                 except Exception as e: st.error(f"系統錯誤: {e}")
         return
 
+    # === 登入後畫面 ===
     user = st.session_state['user']
     user_full = get_user_info_full(user['username'])
     
@@ -184,10 +176,15 @@ def main():
     used = get_used_annual_leave(user['username'])
     my_balance = get_balance(user['username'])
     
+    # 側邊欄顯示協會名稱
+    st.sidebar.markdown(f"### {ORG_NAME}")
+    st.sidebar.divider()
+    
     st.sidebar.title(f"👤 {user_full['name']}")
     st.sidebar.text(f"{user_full['title']}")
     st.sidebar.caption(f"📅 到職日: {user_full.get('onboard_date', '未設定')}")
     st.sidebar.divider()
+    
     c1, c2 = st.sidebar.columns(2)
     c1.metric("補休", f"{my_balance}")
     c2.metric("特休剩", f"{entitled - used}", help=f"總 {entitled}")
@@ -223,10 +220,7 @@ def main():
     elif menu == "紀錄查詢":
         st.header("📅 紀錄")
         target = user['username']
-        
-        # 為了顯示中文名字，先抓取所有使用者資料
         df_users = read_data("users")
-        # 建立 帳號 -> 中文名 的字典
         name_map = dict(zip(df_users['username'], df_users['name']))
         
         if user['role'] in ['manager', 'admin']:
@@ -254,14 +248,10 @@ def main():
         st.header("🎁 加班發放")
         with st.form("ot"):
             dt, dys, rsn = st.date_input("日期"), st.number_input("天數", 0.5, step=0.5), st.text_input("事由")
-            # 讀取使用者並製作中文選單
             df_users = read_data("users")
             active_users = df_users[df_users['status']=='在職']
-            # 製作選單: 顯示 "王小明 (staff1)"
             user_options = {row['username']: f"{row['name']} ({row['username']})" for i, row in active_users.iterrows()}
-            
             sel = st.multiselect("對象", active_users['username'].tolist(), format_func=lambda x: user_options.get(x, x))
-            
             if st.form_submit_button("發放") and sel:
                 for u in sel:
                     update_balance(u, dys)
@@ -271,7 +261,6 @@ def main():
     elif menu == "主管審核":
         st.header("📑 審核")
         lv = read_data("leaves")
-        # 讀取使用者資料表，用來把 username 轉成 中文名
         df_users = read_data("users")
         name_map = dict(zip(df_users['username'], df_users['name']))
 
@@ -281,12 +270,9 @@ def main():
                 st.info("目前無待審核假單")
             else:
                 for i, r in pending.iterrows():
-                    # 取得中文名，若找不到就顯示帳號
                     emp_name = name_map.get(r['username'], r['username'])
-                    # 組合標題： 王小明：特休 1.0 天 (2026-01-20)
                     title_str = f"{emp_name}：{r['type']} {r['days']} 天 ({r['start_date']})"
                     if r['days'] == '0.5': title_str += f" - {r['session']}"
-                    
                     with st.expander(title_str):
                         st.write(f"事由: {r['reason']}")
                         c1, c2 = st.columns(2)
@@ -304,23 +290,16 @@ def main():
         st.header("📊 月報")
         m = st.text_input("月份", datetime.now().strftime("%Y-%m"))
         att = read_data("attendance")
-        # 讀取使用者資料表，用來把 username 轉成 中文名
         df_users = read_data("users")
         name_map = dict(zip(df_users['username'], df_users['name']))
-        
         if not att.empty: 
-            # 篩選月份
             mask = att['time'].astype(str).str.startswith(m)
             df_month = att[mask].copy()
-            
             if not df_month.empty:
-                # 把 username 換成中文名字顯示
                 df_month['姓名'] = df_month['username'].map(name_map).fillna(df_month['username'])
-                # 只選取要顯示的欄位
                 df_final = df_month[['time', '姓名', 'action']].rename(columns={'time': '時間', 'action': '動作'})
                 st.dataframe(df_final, use_container_width=True)
-            else:
-                st.info("該月份無資料")
+            else: st.info("無資料")
 
 if __name__ == "__main__":
     main()
