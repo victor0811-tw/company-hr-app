@@ -4,6 +4,7 @@ import gspread
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import os
+import time
 
 # --- ☁️ 雲端設定區 ---
 GOOGLE_SHEET_NAME = "company_app_db"
@@ -83,7 +84,6 @@ def calculate_annual_leave_entitlement(onboard_date_str):
     except: return 0
 
 def get_used_leave_stats(username):
-    """計算各種假別的『已核准』天數 (年度統計)"""
     df = read_data("leaves")
     stats = {'特休': 0.0, '病假': 0.0, '補休': 0.0, '婚假': 0.0, '喪假': 0.0, '產假': 0.0}
     
@@ -92,25 +92,20 @@ def get_used_leave_stats(username):
 
     df['days'] = pd.to_numeric(df['days'], errors='coerce').fillna(0)
     
-    # 篩選該員工 + 已核准
     mask = (df['username'] == username) & (df['status'] == '已核准')
     user_leaves = df[mask]
     
-    # 簡單統計各假別總和
     for l_type in stats.keys():
         stats[l_type] = user_leaves[user_leaves['type'] == l_type]['days'].sum()
         
     return stats
 
 def get_balances(username):
-    """讀取補休及特殊假餘額"""
     df = read_data("balance")
-    # 預設值
     balances = {'balance': 0.0, 'marriage': 0.0, 'funeral': 0.0, 'maternity': 0.0}
     
     if df.empty: return balances
     
-    # 確保欄位存在，不存在補 0
     for col in balances.keys():
         if col not in df.columns:
             df[col] = 0.0
@@ -123,11 +118,9 @@ def get_balances(username):
     return balances
 
 def update_balance_multi(username, type_col, days_delta):
-    """更新特定假別的餘額 (補休/婚/喪/產)"""
     df = read_data("balance")
     if df.empty: df = pd.DataFrame(columns=['username', 'balance', 'marriage', 'funeral', 'maternity'])
     
-    # 確保欄位都存在
     cols = ['balance', 'marriage', 'funeral', 'maternity']
     for c in cols:
         if c not in df.columns: df[c] = 0.0
@@ -136,7 +129,6 @@ def update_balance_multi(username, type_col, days_delta):
     if username in df['username'].values:
         df.loc[df['username'] == username, type_col] += days_delta
     else:
-        # 新增用戶，其他預設為 0
         new_data = {'username': username, 'balance': 0, 'marriage': 0, 'funeral': 0, 'maternity': 0}
         new_data[type_col] = days_delta
         new_row = pd.DataFrame([new_data])
@@ -177,6 +169,7 @@ def main():
     
     if 'user' not in st.session_state: st.session_state['user'] = None
 
+    # === 登入畫面 ===
     if st.session_state['user'] is None:
         st.title(ORG_NAME)
         st.subheader("☁️ 雲端人資系統")
@@ -194,20 +187,40 @@ def main():
                 except Exception as e: st.error(f"系統錯誤: {e}")
         return
 
+    # === 登入後畫面 ===
     user = st.session_state['user']
     user_full = get_user_info_full(user['username'])
     
-    # 取得各項數據
+    # 取得數據
     entitled_annual = calculate_annual_leave_entitlement(user_full.get('onboard_date'))
     used_stats = get_used_leave_stats(user['username'])
     balances = get_balances(user['username'])
     
-    # 計算剩餘 (特休 & 病假)
     remaining_annual = entitled_annual - used_stats['特休']
-    remaining_sick = 30.0 - used_stats['病假'] # 法定30天
-    
+    remaining_sick = 30.0 - used_stats['病假']
+
+    # === 新功能 2: 主管通知 (Toaster) ===
+    # 每次載入畫面時，如果是主管，就檢查一下有沒有待審核假單
+    pending_count = 0
+    if user['role'] in ['manager', 'admin']:
+        # 為了效能，這裡簡單讀取一次
+        try:
+            df_leaves = read_data("leaves")
+            if not df_leaves.empty:
+                pending_count = len(df_leaves[df_leaves['status'] == '待審核'])
+                if pending_count > 0:
+                    # 跳出右下角通知 (只有剛登入或整理時會跳)
+                    st.toast(f"🔔 您有 {pending_count} 筆假單待審核！", icon="⚠️")
+        except:
+            pass # 避免因為網路問題卡住畫面
+
     # --- 側邊欄 ---
     st.sidebar.markdown(f"### {ORG_NAME}")
+    
+    # 如果有待審核，側邊欄也顯示紅字提醒
+    if pending_count > 0:
+        st.sidebar.error(f"⚠️ 待審案件: {pending_count} 筆")
+        
     st.sidebar.divider()
     
     st.sidebar.title(f"👤 {user_full['name']}")
@@ -215,21 +228,17 @@ def main():
     st.sidebar.caption(f"📅 到職日: {user_full.get('onboard_date', '未設定')}")
     st.sidebar.divider()
     
-    # 顯示各類餘額
     st.sidebar.markdown("#### 假勤存摺")
     c1, c2 = st.sidebar.columns(2)
     c1.metric("補休", f"{balances['balance']}", help="請於一年內休畢")
     c2.metric("特休剩", f"{remaining_annual}", help=f"年度總額: {entitled_annual}")
-    
     c3, c4 = st.sidebar.columns(2)
     c3.metric("病假剩", f"{remaining_sick}", help="法定半薪病假上限 30 天")
     
-    # 只有當有特殊假餘額時才顯示，避免畫面太亂
     if balances['marriage'] > 0: st.sidebar.info(f"💍 婚假餘額: {balances['marriage']} 天")
     if balances['funeral'] > 0: st.sidebar.info(f"🙏 喪假餘額: {balances['funeral']} 天")
     if balances['maternity'] > 0: st.sidebar.info(f"👶 產假餘額: {balances['maternity']} 天")
     
-    # 補休提醒
     if balances['balance'] > 0:
         st.sidebar.warning("⚠️ 溫馨提醒：補休請於產生後一年內休畢。")
 
@@ -251,25 +260,33 @@ def main():
 
     elif menu == "請假申請":
         st.header("📝 請假")
-        # 顯示目前的額度提示
         st.info(f"目前額度：特休 {remaining_annual}天 | 補休 {balances['balance']}天 | 病假剩 {remaining_sick}天")
         
         with st.form("l"):
-            # 選單加入新假別
             lt = st.selectbox("假別", ["特休", "補休", "病假", "事假", "婚假", "喪假", "產假"])
             sd = st.date_input("日期")
             d = st.number_input("天數", 0.5, step=0.5)
-            sess = st.radio("時段", ["上午", "下午"], horizontal=True) if d == 0.5 else "全天"
+            
+            # === 新功能 1: 0.5天提醒 ===
+            sess = "全天"
+            if d == 0.5:
+                st.info("💡 您選擇了半天，請記得選擇下方「時段」喔！")
+                sess = st.radio("時段", ["上午", "下午"], horizontal=True)
+            # =========================
+            
             rsn = st.text_area("事由")
+            
+            # === 確認資訊顯示 ===
+            st.markdown(f"**確認申請內容：** `{sd}` `({sess})` - `{lt}` `{d} 天`")
+            # =================
             
             if st.form_submit_button("送出申請"):
                 error_msg = ""
-                # 檢查各種餘額
                 if lt == "補休" and balances['balance'] < d: error_msg = "補休餘額不足"
-                elif lt == "婚假" and balances['marriage'] < d: error_msg = "婚假餘額不足 (請聯繫主管給假)"
-                elif lt == "喪假" and balances['funeral'] < d: error_msg = "喪假餘額不足 (請聯繫主管給假)"
-                elif lt == "產假" and balances['maternity'] < d: error_msg = "產假餘額不足 (請聯繫主管給假)"
-                elif lt == "病假" and remaining_sick < d: st.warning("⚠️ 病假已超過法定 30 天半薪上限，將視為無薪病假或需與主管確認。")
+                elif lt == "婚假" and balances['marriage'] < d: error_msg = "婚假餘額不足"
+                elif lt == "喪假" and balances['funeral'] < d: error_msg = "喪假餘額不足"
+                elif lt == "產假" and balances['maternity'] < d: error_msg = "產假餘額不足"
+                elif lt == "病假" and remaining_sick < d: st.warning("⚠️ 病假已超過法定 30 天，請確認。")
                 
                 if error_msg:
                     st.error(f"❌ {error_msg}")
@@ -290,25 +307,19 @@ def main():
         t1, t2, t3 = st.tabs(["打卡", "請假", "加班/給假"])
         with t1: 
             df = read_data("attendance")
-            if not df.empty:
-                st.dataframe(rename_columns_to_chinese(df[df['username'] == target]), use_container_width=True)
+            if not df.empty: st.dataframe(rename_columns_to_chinese(df[df['username'] == target]), use_container_width=True)
         with t2: 
             df = read_data("leaves")
-            if not df.empty:
-                st.dataframe(rename_columns_to_chinese(df[df['username'] == target]), use_container_width=True)
+            if not df.empty: st.dataframe(rename_columns_to_chinese(df[df['username'] == target]), use_container_width=True)
         with t3: 
             df = read_data("overtime")
-            if not df.empty:
-                st.dataframe(rename_columns_to_chinese(df[df['username'] == target]), use_container_width=True)
+            if not df.empty: st.dataframe(rename_columns_to_chinese(df[df['username'] == target]), use_container_width=True)
 
-    # 修改：將名稱改為 "權限管理/給假" 以符合新功能
     elif menu == "權限管理/給假":
         st.header("🎁 假勤給予 / 加班登錄")
-        st.info("在此發放『補休』，或給予特殊假別額度 (婚/喪/產)。")
-        
         with st.form("ot"):
             grant_type = st.selectbox("給予項目", ["補休 (加班)", "婚假", "喪假", "產假"])
-            dt = st.date_input("日期 (發生日/生效日)")
+            dt = st.date_input("日期")
             dys = st.number_input("天數", 0.5, step=0.5)
             rsn = st.text_input("事由 / 備註")
             
@@ -318,19 +329,10 @@ def main():
             sel = st.multiselect("對象", active_users['username'].tolist(), format_func=lambda x: user_options.get(x, x))
             
             if st.form_submit_button("確認發放") and sel:
-                # 對應 Google Sheet 的欄位名稱
-                col_map = {
-                    "補休 (加班)": "balance",
-                    "婚假": "marriage",
-                    "喪假": "funeral",
-                    "產假": "maternity"
-                }
+                col_map = {"補休 (加班)": "balance", "婚假": "marriage", "喪假": "funeral", "產假": "maternity"}
                 target_col = col_map[grant_type]
-                
                 for u in sel:
-                    # 更新餘額
                     update_balance_multi(u, target_col, dys)
-                    # 寫入紀錄 (統一寫在 overtime 表，但標註類型)
                     log_reason = f"[{grant_type}] {rsn}"
                     append_data("overtime", [u, str(dt), dys, log_reason, user['name']])
                 st.success(f"已成功發放 {grant_type} 給 {len(sel)} 人！")
@@ -349,20 +351,18 @@ def main():
                 for i, r in pending.iterrows():
                     emp_name = name_map.get(r['username'], r['username'])
                     title_str = f"{emp_name}：{r['type']} {r['days']} 天 ({r['start_date']})"
+                    if r['days'] == '0.5': title_str += f" - {r['session']}"
                     with st.expander(title_str):
                         st.write(f"事由: {r['reason']}")
                         c1, c2 = st.columns(2)
                         if c1.button("准", key=f"ok_{i}"):
                             lv.at[i, 'status'] = '已核准'
-                            # 扣款邏輯：根據假別扣對應的欄位
                             l_type = r['type']
-                            d_val = -float(r['days']) # 扣款是負數
-                            
+                            d_val = -float(r['days'])
                             if l_type == '補休': update_balance_multi(r['username'], 'balance', d_val)
                             elif l_type == '婚假': update_balance_multi(r['username'], 'marriage', d_val)
                             elif l_type == '喪假': update_balance_multi(r['username'], 'funeral', d_val)
                             elif l_type == '產假': update_balance_multi(r['username'], 'maternity', d_val)
-                            
                             overwrite_data("leaves", lv)
                             st.rerun()
                         if c2.button("駁", key=f"no_{i}"):
