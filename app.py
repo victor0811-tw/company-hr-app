@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
 import gspread
-from datetime import datetime
+from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import os
 import time
+import calendar  # 新增引用：用來畫月曆
 
 # --- ☁️ 雲端設定區 ---
 GOOGLE_SHEET_NAME = "company_app_db"
@@ -163,7 +164,95 @@ def rename_columns_to_chinese(df):
     }
     return df.rename(columns=map_dict)
 
-# --- 3. 主程式 ---
+# --- 3. 新增功能：月曆繪製 ---
+def render_calendar_ui(df_leaves, df_users):
+    """繪製互動式月曆，標示請假狀況"""
+    # 狀態管理：目前的年/月
+    if 'cal_year' not in st.session_state:
+        st.session_state['cal_year'] = datetime.now().year
+        st.session_state['cal_month'] = datetime.now().month
+
+    # 切換月份的函式
+    def change_month(amount):
+        st.session_state['cal_month'] += amount
+        if st.session_state['cal_month'] > 12:
+            st.session_state['cal_month'] = 1
+            st.session_state['cal_year'] += 1
+        elif st.session_state['cal_month'] < 1:
+            st.session_state['cal_month'] = 12
+            st.session_state['cal_year'] -= 1
+
+    # 月曆控制列
+    col_prev, col_date, col_next = st.columns([1, 5, 1])
+    with col_prev:
+        st.button("◀", on_click=change_month, args=(-1,), use_container_width=True)
+    with col_date:
+        st.markdown(f"<h3 style='text-align: center;'>{st.session_state['cal_year']} 年 {st.session_state['cal_month']} 月</h3>", unsafe_allow_html=True)
+    with col_next:
+        st.button("▶", on_click=change_month, args=(1,), use_container_width=True)
+
+    # 準備資料：篩選當月已核准的假單
+    target_ym = f"{st.session_state['cal_year']}-{st.session_state['cal_month']:02d}"
+    
+    # 建立 帳號 -> 中文名 對照表
+    name_map = dict(zip(df_users['username'], df_users['name']))
+    
+    # 建立 {日期: [請假字串, ...]} 的字典
+    events_map = {}
+    if not df_leaves.empty:
+        # 只看已核准
+        approved = df_leaves[df_leaves['status'] == '已核准']
+        for _, row in approved.iterrows():
+            s_date = row['start_date'] # 格式 YYYY-MM-DD
+            if s_date.startswith(target_ym):
+                # 取得這天的 key (去掉前面的 0, e.g., 2024-05-05 -> 5)
+                day_int = int(s_date.split('-')[2])
+                
+                u_name = name_map.get(row['username'], row['username'])
+                info = f"{u_name}: {row['type']} {row['days']}天 ({row['session']})"
+                
+                if day_int not in events_map:
+                    events_map[day_int] = []
+                events_map[day_int].append(info)
+
+    # 繪製月曆網格
+    # 星期幾標題
+    cols = st.columns(7)
+    weekdays = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
+    for i, w in enumerate(weekdays):
+        cols[i].markdown(f"**{w}**", unsafe_allow_html=True)
+
+    # 取得當月日曆矩陣
+    # monthcalendar 回傳一個矩陣，0 代表該位置是上個月或下個月的日子
+    cal = calendar.monthcalendar(st.session_state['cal_year'], st.session_state['cal_month'])
+
+    for week in cal:
+        cols = st.columns(7)
+        for i, day in enumerate(week):
+            with cols[i]:
+                if day == 0:
+                    st.write("") # 空白
+                else:
+                    # 檢查這天有沒有活動
+                    has_event = day in events_map
+                    
+                    # 顯示日期
+                    if has_event:
+                        # 組合提示訊息
+                        tooltip_text = "\n".join(events_map[day])
+                        # 用紅色顯示，並加上 tooltip
+                        st.markdown(f"""
+                        <div style='background-color: #ffebee; border-radius: 5px; padding: 5px; text-align: center; border: 1px solid #ffcdd2;' title='{tooltip_text}'>
+                            <strong>{day}</strong><br>
+                            <span style='color: red; font-size: 0.8em;'>🔴 {len(events_map[day])}人</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"<div style='padding: 5px; text-align: center;'>{day}</div>", unsafe_allow_html=True)
+    st.markdown("---")
+
+
+# --- 4. 主程式 ---
 def main():
     st.set_page_config(page_title=ORG_NAME, page_icon="🏢")
     
@@ -191,7 +280,6 @@ def main():
     user = st.session_state['user']
     user_full = get_user_info_full(user['username'])
     
-    # 取得數據
     entitled_annual = calculate_annual_leave_entitlement(user_full.get('onboard_date'))
     used_stats = get_used_leave_stats(user['username'])
     balances = get_balances(user['username'])
@@ -199,28 +287,20 @@ def main():
     remaining_annual = entitled_annual - used_stats['特休']
     remaining_sick = 30.0 - used_stats['病假']
 
-    # === 新功能 2: 主管通知 (Toaster) ===
-    # 每次載入畫面時，如果是主管，就檢查一下有沒有待審核假單
+    # 主管通知
     pending_count = 0
     if user['role'] in ['manager', 'admin']:
-        # 為了效能，這裡簡單讀取一次
         try:
             df_leaves = read_data("leaves")
             if not df_leaves.empty:
                 pending_count = len(df_leaves[df_leaves['status'] == '待審核'])
                 if pending_count > 0:
-                    # 跳出右下角通知 (只有剛登入或整理時會跳)
                     st.toast(f"🔔 您有 {pending_count} 筆假單待審核！", icon="⚠️")
-        except:
-            pass # 避免因為網路問題卡住畫面
+        except: pass
 
     # --- 側邊欄 ---
     st.sidebar.markdown(f"### {ORG_NAME}")
-    
-    # 如果有待審核，側邊欄也顯示紅字提醒
-    if pending_count > 0:
-        st.sidebar.error(f"⚠️ 待審案件: {pending_count} 筆")
-        
+    if pending_count > 0: st.sidebar.error(f"⚠️ 待審案件: {pending_count} 筆")
     st.sidebar.divider()
     
     st.sidebar.title(f"👤 {user_full['name']}")
@@ -261,24 +341,16 @@ def main():
     elif menu == "請假申請":
         st.header("📝 請假")
         st.info(f"目前額度：特休 {remaining_annual}天 | 補休 {balances['balance']}天 | 病假剩 {remaining_sick}天")
-        
         with st.form("l"):
             lt = st.selectbox("假別", ["特休", "補休", "病假", "事假", "婚假", "喪假", "產假"])
             sd = st.date_input("日期")
             d = st.number_input("天數", 0.5, step=0.5)
-            
-            # === 新功能 1: 0.5天提醒 ===
             sess = "全天"
             if d == 0.5:
                 st.info("💡 您選擇了半天，請記得選擇下方「時段」喔！")
                 sess = st.radio("時段", ["上午", "下午"], horizontal=True)
-            # =========================
-            
             rsn = st.text_area("事由")
-            
-            # === 確認資訊顯示 ===
             st.markdown(f"**確認申請內容：** `{sd}` `({sess})` - `{lt}` `{d} 天`")
-            # =================
             
             if st.form_submit_button("送出申請"):
                 error_msg = ""
@@ -296,15 +368,23 @@ def main():
 
     elif menu == "紀錄查詢":
         st.header("📅 紀錄")
-        target = user['username']
-        df_users = read_data("users")
+        df_users = read_data("users") # 讀取使用者名單供對照
         name_map = dict(zip(df_users['username'], df_users['name']))
         
+        # === v9.0 新增月曆分頁 ===
+        t_cal, t1, t2, t3 = st.tabs(["🗓️ 行事曆", "打卡明細", "請假明細", "加班/給假明細"])
+        
+        with t_cal:
+            st.markdown("#### 📅 員工請假概況")
+            df_all_leaves = read_data("leaves")
+            render_calendar_ui(df_all_leaves, df_users)
+
+        # 查詢列表邏輯
+        target = user['username']
         if user['role'] in ['manager', 'admin']:
             all_u_list = df_users['username'].tolist()
-            target = st.selectbox("查詢", all_u_list, format_func=lambda x: f"{name_map.get(x, x)}", index=all_u_list.index(user['username']) if user['username'] in all_u_list else 0)
+            target = st.selectbox("查詢特定員工", all_u_list, format_func=lambda x: f"{name_map.get(x, x)}", index=all_u_list.index(user['username']) if user['username'] in all_u_list else 0)
         
-        t1, t2, t3 = st.tabs(["打卡", "請假", "加班/給假"])
         with t1: 
             df = read_data("attendance")
             if not df.empty: st.dataframe(rename_columns_to_chinese(df[df['username'] == target]), use_container_width=True)
