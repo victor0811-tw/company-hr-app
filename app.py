@@ -67,8 +67,17 @@ def overwrite_data(sheet_name, df):
         st.error(f"更新失敗: {e}")
 
 # --- 2. 核心邏輯 ---
+# 新增一個安全的日期轉換工具，防止因為空白而當機
+def safe_parse_date(date_str, default_date=None):
+    if not date_str or str(date_str).strip() == "":
+        return default_date
+    try:
+        return datetime.strptime(str(date_str), "%Y-%m-%d")
+    except:
+        return default_date
+
 def calculate_tenure(onboard_date_str):
-    """計算年資 (回傳字串: X年Y個月)"""
+    """計算年資"""
     try:
         onboard = datetime.strptime(str(onboard_date_str), "%Y-%m-%d")
         today = datetime.now()
@@ -142,27 +151,21 @@ def get_user_info_full(username):
     return None
 
 def update_user_profile(user_data):
-    """更新使用者個人資料"""
     df = read_data("users")
     username = user_data['username']
-    
-    # 確保所有欄位都存在
     cols = ['username', 'password', 'role', 'name', 'title', 'onboard_date', 'status', 
             'gender', 'dept', 'birthday', 'id_card', 'mobile', 'phone', 'address', 'email', 'school', 'resign_date']
     for c in cols:
         if c not in df.columns: df[c] = ""
             
     if username in df['username'].values:
-        # 更新現有資料
         idx = df[df['username'] == username].index[0]
         for key, value in user_data.items():
             if key in df.columns:
                 df.at[idx, key] = str(value)
     else:
-        # 新增使用者 (append)
         new_row = pd.DataFrame([user_data])
         df = pd.concat([df, new_row], ignore_index=True)
-        
     overwrite_data("users", df)
 
 def login(username, password):
@@ -234,9 +237,7 @@ def render_calendar_ui(df_leaves, df_users):
                         st.markdown(f"<div style='padding:5px;text-align:center;'>{day}</div>", unsafe_allow_html=True)
     st.markdown("---")
 
-# --- 3. 新增功能：生成 A4 HTML ---
 def generate_a4_html(info):
-    """產生符合 A4 列印格式的 HTML"""
     html_content = f"""
     <style>
         @media print {{
@@ -259,7 +260,6 @@ def generate_a4_html(info):
     
     <div class="a4-container">
         <div class="card-title">員工資料卡</div>
-        
         <div class="section-header">個人資料</div>
         <table>
             <tr>
@@ -292,7 +292,6 @@ def generate_a4_html(info):
                 <td class="label">狀態</td><td colspan="2">{info.get('status', '')}</td>
             </tr>
         </table>
-        
         <br>
         <div class="section-header">部門與薪資</div>
         <table>
@@ -305,7 +304,6 @@ def generate_a4_html(info):
                 <td class="label">約定薪資</td><td class="value">******</td>
             </tr>
         </table>
-        
         <br><br><br>
         <div style="text-align: right; margin-top: 50px; font-size: 16px;">
             <p>已確認以上資料無誤，於 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 年 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 月 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 日 親自填寫</p>
@@ -321,7 +319,6 @@ def main():
     st.set_page_config(page_title=ORG_NAME, page_icon="🏢")
     if 'user' not in st.session_state: st.session_state['user'] = None
 
-    # === 登入畫面 ===
     if st.session_state['user'] is None:
         st.title(ORG_NAME)
         st.subheader("☁️ 雲端人資系統")
@@ -339,7 +336,6 @@ def main():
                 except Exception as e: st.error(f"系統錯誤: {e}")
         return
 
-    # === 登入後畫面 ===
     user = st.session_state['user']
     user_full = get_user_info_full(user['username'])
     
@@ -358,7 +354,6 @@ def main():
                 if pending_count > 0: st.toast(f"🔔 有 {pending_count} 筆假單待審核！", icon="⚠️")
         except: pass
 
-    # --- 側邊欄 ---
     st.sidebar.markdown(f"### {ORG_NAME}")
     if pending_count > 0: st.sidebar.error(f"⚠️ 待審案件: {pending_count} 筆")
     st.sidebar.divider()
@@ -367,7 +362,6 @@ def main():
     st.sidebar.caption(f"📅 到職日: {user_full.get('onboard_date', '未設定')}")
     st.sidebar.divider()
     
-    st.sidebar.markdown("#### 假勤存摺")
     c1, c2 = st.sidebar.columns(2)
     c1.metric("補休", f"{balances['balance']}", help="請於一年內休畢")
     c2.metric("特休剩", f"{remaining_annual}", help=f"總額: {entitled_annual}")
@@ -379,10 +373,8 @@ def main():
         st.session_state['user'] = None
         st.rerun()
 
-    # 選單
     menu_options = ["打卡作業", "請假申請", "紀錄查詢"]
     if user['role'] in ['manager', 'admin']:
-        # 新增 "人事資料卡" 功能
         menu_options += ["權限管理/給假", "主管審核", "人事資料卡", "考勤月報表"]
     
     menu = st.sidebar.radio("功能", menu_options)
@@ -464,14 +456,11 @@ def main():
                     append_data("overtime", [u, str(dt), dys, f"[{grant}] {rsn}", user['name']])
                 st.success("完成")
 
-    # === 新增功能：人事資料卡 ===
+    # === 人事資料卡 (v10.1 修正版) ===
     elif menu == "人事資料卡":
         st.header("📇 人事資料管理")
-        
-        # 1. 選擇要操作的員工
         df_users = read_data("users")
         user_list = df_users['username'].tolist()
-        # 顯示中文名供選擇
         u_options = {r['username']: f"{r['name']} ({r['username']})" for i, r in df_users.iterrows()}
         
         c_sel, c_act = st.columns([3, 1])
@@ -486,16 +475,25 @@ def main():
         with tab_edit:
             with st.form("profile_form"):
                 st.subheader(f"編輯：{current_info.get('name')}")
+                
+                # 安全解析日期
+                default_birth = safe_parse_date(current_info.get('birthday'))
+                if default_birth is None: default_birth = datetime(1990, 1, 1) # 預設給個 1990
+
+                default_onboard = safe_parse_date(current_info.get('onboard_date'))
+                if default_onboard is None: default_onboard = datetime.now()
+
                 c1, c2 = st.columns(2)
                 with c1:
                     new_name = st.text_input("姓名", current_info.get('name'))
                     new_gender = st.selectbox("性別", ["男", "女", "其他"], index=["男", "女", "其他"].index(current_info.get('gender')) if current_info.get('gender') in ["男", "女", "其他"] else 0)
                     new_id = st.text_input("身份證字號", current_info.get('id_card'))
-                    new_birth = st.date_input("生日", datetime.strptime(current_info.get('birthday'), "%Y-%m-%d") if current_info.get('birthday') else None)
+                    # 修正：min_value 設定為 1900 年，防止只能選 10 年內
+                    new_birth = st.date_input("生日", value=default_birth, min_value=datetime(1900, 1, 1), max_value=datetime.now())
                 with c2:
                     new_dept = st.text_input("部門", current_info.get('dept'))
                     new_title = st.text_input("職稱", current_info.get('title'))
-                    new_onboard = st.date_input("到職日", datetime.strptime(current_info.get('onboard_date'), "%Y-%m-%d") if current_info.get('onboard_date') else datetime.now())
+                    new_onboard = st.date_input("到職日", value=default_onboard, min_value=datetime(1900, 1, 1))
                     new_status = st.selectbox("狀態", ["在職", "離職"], index=0 if current_info.get('status')=="在職" else 1)
                 
                 st.markdown("---")
@@ -511,7 +509,7 @@ def main():
 
                 if st.form_submit_button("💾 儲存資料"):
                     updated_data = {
-                        'username': target_u, # Key
+                        'username': target_u,
                         'name': new_name, 'gender': new_gender, 'id_card': new_id, 
                         'birthday': str(new_birth), 'dept': new_dept, 'title': new_title,
                         'onboard_date': str(new_onboard), 'status': new_status,
@@ -525,9 +523,7 @@ def main():
 
         with tab_print:
             st.info("💡 提示：此畫面模擬 A4 紙張。請按瀏覽器的「列印 (Ctrl+P)」並選擇「儲存為 PDF」或直接列印。")
-            # 產生 HTML
             html_code = generate_a4_html(current_info)
-            # 顯示 HTML (使用 unsafe_allow_html 渲染 CSS)
             st.markdown(html_code, unsafe_allow_html=True)
 
     elif menu == "主管審核":
