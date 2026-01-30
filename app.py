@@ -6,6 +6,7 @@ from dateutil.relativedelta import relativedelta
 import os
 import time
 import calendar
+import streamlit.components.v1 as components
 
 # --- ☁️ 雲端設定區 ---
 GOOGLE_SHEET_NAME = "company_app_db"
@@ -67,7 +68,6 @@ def overwrite_data(sheet_name, df):
         st.error(f"更新失敗: {e}")
 
 # --- 2. 核心邏輯 ---
-# 新增一個安全的日期轉換工具，防止因為空白而當機
 def safe_parse_date(date_str, default_date=None):
     if not date_str or str(date_str).strip() == "":
         return default_date
@@ -77,7 +77,6 @@ def safe_parse_date(date_str, default_date=None):
         return default_date
 
 def calculate_tenure(onboard_date_str):
-    """計算年資"""
     try:
         onboard = datetime.strptime(str(onboard_date_str), "%Y-%m-%d")
         today = datetime.now()
@@ -154,7 +153,7 @@ def update_user_profile(user_data):
     df = read_data("users")
     username = user_data['username']
     cols = ['username', 'password', 'role', 'name', 'title', 'onboard_date', 'status', 
-            'gender', 'dept', 'birthday', 'id_card', 'mobile', 'phone', 'address', 'email', 'school', 'resign_date']
+            'gender', 'dept', 'birthday', 'id_card', 'mobile', 'phone', 'address', 'email', 'school', 'resign_date', 'photo_url']
     for c in cols:
         if c not in df.columns: df[c] = ""
             
@@ -238,26 +237,63 @@ def render_calendar_ui(df_leaves, df_users):
     st.markdown("---")
 
 def generate_a4_html(info):
+    # 處理照片
+    photo_html = "照片"
+    if info.get('photo_url') and str(info.get('photo_url')).startswith('http'):
+        photo_html = f"<img src='{info.get('photo_url')}' style='max-width:100%; max-height:100%; object-fit:contain;'>"
+
     html_content = f"""
     <style>
+        /* 強制列印樣式 */
         @media print {{
-            @page {{ size: A4; margin: 1cm; }}
-            header, footer, aside, .stAppHeader {{ display: none !important; }}
-            body {{ font-family: "Microsoft JhengHei", sans-serif; -webkit-print-color-adjust: exact; }}
+            @page {{ size: A4; margin: 0; }}
+            /* 隱藏 Streamlit 的所有 UI 元素 */
+            header, footer, aside, .stAppHeader, .stSidebar, .stDeployButton, .stButton, .stTabs {{ display: none !important; }}
+            /* 隱藏主畫面內容，只顯示我們的 A4 container */
+            body * {{ visibility: hidden; }}
+            
+            /* 讓 A4 container 唯一可見，並強制定位 */
+            .a4-container, .a4-container * {{
+                visibility: visible;
+            }}
+            .a4-container {{
+                position: fixed;
+                left: 0;
+                top: 0;
+                width: 210mm;
+                min-height: 297mm;
+                margin: 0;
+                padding: 1.5cm;
+                background: white;
+                z-index: 9999;
+            }}
         }}
+        
+        /* 螢幕預覽樣式 */
         .a4-container {{
             width: 21cm; min-height: 29.7cm; padding: 1cm; margin: auto; background: white; 
             border: 1px solid #ddd; box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            font-family: "Microsoft JhengHei", sans-serif;
         }}
         .card-title {{ text-align: center; font-size: 24px; font-weight: bold; margin-bottom: 20px; border-bottom: 2px solid #000; padding-bottom: 10px; }}
         table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
         td, th {{ border: 1px solid #333; padding: 10px; font-size: 14px; vertical-align: middle; }}
         .label {{ background-color: #f0f0f0; font-weight: bold; width: 15%; }}
         .value {{ width: 35%; }}
-        .photo-area {{ width: 20%; text-align: center; color: #999; }}
+        .photo-area {{ width: 20%; text-align: center; color: #999; height: 150px; }}
         .section-header {{ background-color: #e0e0e0; text-align: center; font-weight: bold; padding: 5px; }}
+        
+        /* 列印按鈕樣式 (列印時會被上面的CSS隱藏) */
+        .print-btn {{
+            display: block; width: 100%; padding: 10px; background-color: #4CAF50; color: white; 
+            text-align: center; cursor: pointer; border-radius: 5px; margin-bottom: 20px;
+            font-size: 18px; font-weight: bold;
+        }}
+        .print-btn:hover {{ background-color: #45a049; }}
     </style>
     
+    <button class="print-btn" onclick="window.print()">🖨️ 點此列印 (將自動隱藏其他網頁內容)</button>
+
     <div class="a4-container">
         <div class="card-title">員工資料卡</div>
         <div class="section-header">個人資料</div>
@@ -265,7 +301,7 @@ def generate_a4_html(info):
             <tr>
                 <td class="label">姓名</td><td class="value">{info.get('name', '')}</td>
                 <td class="label">到職日期</td><td class="value">{info.get('onboard_date', '')}</td>
-                <td rowspan="4" class="photo-area">照片</td>
+                <td rowspan="4" class="photo-area">{photo_html}</td>
             </tr>
             <tr>
                 <td class="label">身份證字號</td><td class="value">{info.get('id_card', '')}</td>
@@ -456,7 +492,7 @@ def main():
                     append_data("overtime", [u, str(dt), dys, f"[{grant}] {rsn}", user['name']])
                 st.success("完成")
 
-    # === 人事資料卡 (v10.1 修正版) ===
+    # === 人事資料卡 ===
     elif menu == "人事資料卡":
         st.header("📇 人事資料管理")
         df_users = read_data("users")
@@ -467,7 +503,6 @@ def main():
         with c_sel:
             target_u = st.selectbox("選擇員工", user_list, format_func=lambda x: u_options.get(x, x))
         
-        # 取得該員工目前資料
         current_info = df_users[df_users['username'] == target_u].iloc[0].to_dict()
         
         tab_edit, tab_print = st.tabs(["✏️ 編輯資料", "🖨️ 預覽與列印"])
@@ -476,9 +511,8 @@ def main():
             with st.form("profile_form"):
                 st.subheader(f"編輯：{current_info.get('name')}")
                 
-                # 安全解析日期
                 default_birth = safe_parse_date(current_info.get('birthday'))
-                if default_birth is None: default_birth = datetime(1990, 1, 1) # 預設給個 1990
+                if default_birth is None: default_birth = datetime(1990, 1, 1)
 
                 default_onboard = safe_parse_date(current_info.get('onboard_date'))
                 if default_onboard is None: default_onboard = datetime.now()
@@ -488,8 +522,8 @@ def main():
                     new_name = st.text_input("姓名", current_info.get('name'))
                     new_gender = st.selectbox("性別", ["男", "女", "其他"], index=["男", "女", "其他"].index(current_info.get('gender')) if current_info.get('gender') in ["男", "女", "其他"] else 0)
                     new_id = st.text_input("身份證字號", current_info.get('id_card'))
-                    # 修正：min_value 設定為 1900 年，防止只能選 10 年內
                     new_birth = st.date_input("生日", value=default_birth, min_value=datetime(1900, 1, 1), max_value=datetime.now())
+                    new_photo = st.text_input("照片連結 (URL)", current_info.get('photo_url'), placeholder="請輸入圖片網址 (https://...)")
                 with c2:
                     new_dept = st.text_input("部門", current_info.get('dept'))
                     new_title = st.text_input("職稱", current_info.get('title'))
@@ -514,7 +548,8 @@ def main():
                         'birthday': str(new_birth), 'dept': new_dept, 'title': new_title,
                         'onboard_date': str(new_onboard), 'status': new_status,
                         'phone': new_phone, 'mobile': new_mobile, 'email': new_email,
-                        'address': new_addr, 'school': new_school, 'resign_date': new_resign
+                        'address': new_addr, 'school': new_school, 'resign_date': new_resign,
+                        'photo_url': new_photo
                     }
                     update_user_profile(updated_data)
                     st.success("資料已更新！請切換到「預覽與列印」分頁查看。")
@@ -522,9 +557,10 @@ def main():
                     st.rerun()
 
         with tab_print:
-            st.info("💡 提示：此畫面模擬 A4 紙張。請按瀏覽器的「列印 (Ctrl+P)」並選擇「儲存為 PDF」或直接列印。")
+            st.info("💡 說明：按下綠色按鈕後，會開啟列印視窗。該視窗會自動隱藏側邊欄和其他按鈕，只顯示表格。")
             html_code = generate_a4_html(current_info)
-            st.markdown(html_code, unsafe_allow_html=True)
+            # 這裡透過 components.html 來注入按鈕功能，確保 JS 執行
+            components.html(html_code, height=1150, scrolling=True)
 
     elif menu == "主管審核":
         st.header("📑 審核")
