@@ -153,7 +153,7 @@ def update_user_profile(user_data):
     df = read_data("users")
     username = user_data['username']
     cols = ['username', 'password', 'role', 'name', 'title', 'onboard_date', 'status', 
-            'gender', 'dept', 'birthday', 'id_card', 'mobile', 'phone', 'address', 'email', 'school', 'resign_date', 'photo_url']
+            'gender', 'dept', 'birthday', 'id_card', 'mobile', 'phone', 'address', 'email', 'school', 'resign_date']
     for c in cols:
         if c not in df.columns: df[c] = ""
             
@@ -237,22 +237,15 @@ def render_calendar_ui(df_leaves, df_users):
     st.markdown("---")
 
 def generate_a4_html(info):
-    # 處理照片
-    photo_html = "照片"
-    if info.get('photo_url') and str(info.get('photo_url')).startswith('http'):
-        photo_html = f"<img src='{info.get('photo_url')}' style='max-width:100%; max-height:100%; object-fit:contain;'>"
-
     html_content = f"""
     <style>
         /* 強制列印樣式 */
         @media print {{
             @page {{ size: A4; margin: 0; }}
-            /* 隱藏 Streamlit 的所有 UI 元素 */
             header, footer, aside, .stAppHeader, .stSidebar, .stDeployButton, .stButton, .stTabs {{ display: none !important; }}
-            /* 隱藏主畫面內容，只顯示我們的 A4 container */
             body * {{ visibility: hidden; }}
             
-            /* 讓 A4 container 唯一可見，並強制定位 */
+            /* 只顯示 A4 container */
             .a4-container, .a4-container * {{
                 visibility: visible;
             }}
@@ -266,6 +259,9 @@ def generate_a4_html(info):
                 padding: 1.5cm;
                 background: white;
                 z-index: 9999;
+                /* === 關鍵修正：縮小至 91% === */
+                transform: scale(0.91);
+                transform-origin: top center;
             }}
         }}
         
@@ -276,14 +272,14 @@ def generate_a4_html(info):
             font-family: "Microsoft JhengHei", sans-serif;
         }}
         .card-title {{ text-align: center; font-size: 24px; font-weight: bold; margin-bottom: 20px; border-bottom: 2px solid #000; padding-bottom: 10px; }}
-        table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
-        td, th {{ border: 1px solid #333; padding: 10px; font-size: 14px; vertical-align: middle; }}
-        .label {{ background-color: #f0f0f0; font-weight: bold; width: 15%; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 10px; table-layout: fixed; }}
+        td, th {{ border: 1px solid #333; padding: 8px; font-size: 14px; vertical-align: middle; }}
+        .label {{ background-color: #f0f0f0; font-weight: bold; width: 15%; text-align: center; }}
         .value {{ width: 35%; }}
-        .photo-area {{ width: 20%; text-align: center; color: #999; height: 150px; }}
-        .section-header {{ background-color: #e0e0e0; text-align: center; font-weight: bold; padding: 5px; }}
+        /* 照片區域固定大小：約 2 吋 (3.5cm x 4.5cm) */
+        .photo-area {{ width: 4cm; text-align: center; color: #ccc; font-size: 12px; height: 5cm; vertical-align: middle; }}
+        .section-header {{ background-color: #e0e0e0; text-align: center; font-weight: bold; padding: 5px; margin-top: 15px; border: 1px solid #333; }}
         
-        /* 列印按鈕樣式 (列印時會被上面的CSS隱藏) */
         .print-btn {{
             display: block; width: 100%; padding: 10px; background-color: #4CAF50; color: white; 
             text-align: center; cursor: pointer; border-radius: 5px; margin-bottom: 20px;
@@ -292,16 +288,21 @@ def generate_a4_html(info):
         .print-btn:hover {{ background-color: #45a049; }}
     </style>
     
-    <button class="print-btn" onclick="window.print()">🖨️ 點此列印 (將自動隱藏其他網頁內容)</button>
+    <button class="print-btn" onclick="window.print()">🖨️ 點此列印 (自動縮放 91%)</button>
 
     <div class="a4-container">
         <div class="card-title">員工資料卡</div>
+        
         <div class="section-header">個人資料</div>
         <table>
             <tr>
                 <td class="label">姓名</td><td class="value">{info.get('name', '')}</td>
                 <td class="label">到職日期</td><td class="value">{info.get('onboard_date', '')}</td>
-                <td rowspan="4" class="photo-area">{photo_html}</td>
+                <td rowspan="4" class="photo-area">
+                    <div style="width: 3.5cm; height: 4.5cm; border: 1px dashed #999; margin: auto; line-height: 4.5cm;">
+                        貼照片處
+                    </div>
+                </td>
             </tr>
             <tr>
                 <td class="label">身份證字號</td><td class="value">{info.get('id_card', '')}</td>
@@ -311,24 +312,23 @@ def generate_a4_html(info):
                 <td class="label">性別</td><td class="value">{info.get('gender', '')}</td>
                 <td class="label">年資</td><td class="value">{calculate_tenure(info.get('onboard_date', ''))}</td>
             </tr>
-             <tr>
-                <td class="label">通訊地址</td><td colspan="3">{info.get('address', '')}</td>
-            </tr>
             <tr>
                 <td class="label">聯絡電話</td><td class="value">{info.get('phone', '')}</td>
                 <td class="label">手機</td><td class="value">{info.get('mobile', '')}</td>
-                <td>電子郵件</td>
             </tr>
             <tr>
-                <td class="label">最高學歷</td><td class="value">{info.get('school', '')}</td>
                 <td class="label">電子郵件</td><td colspan="2">{info.get('email', '')}</td>
+                <td class="label">最高學歷</td><td class="value">{info.get('school', '')}</td>
             </tr>
-             <tr>
+            <tr>
+                <td class="label">通訊地址</td><td colspan="4">{info.get('address', '')}</td>
+            </tr>
+            <tr>
                 <td class="label">離職日期</td><td class="value">{info.get('resign_date', '')}</td>
                 <td class="label">狀態</td><td colspan="2">{info.get('status', '')}</td>
             </tr>
         </table>
-        <br>
+        
         <div class="section-header">部門與薪資</div>
         <table>
             <tr>
@@ -340,6 +340,7 @@ def generate_a4_html(info):
                 <td class="label">約定薪資</td><td class="value">******</td>
             </tr>
         </table>
+        
         <br><br><br>
         <div style="text-align: right; margin-top: 50px; font-size: 16px;">
             <p>已確認以上資料無誤，於 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 年 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 月 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 日 親自填寫</p>
@@ -523,7 +524,6 @@ def main():
                     new_gender = st.selectbox("性別", ["男", "女", "其他"], index=["男", "女", "其他"].index(current_info.get('gender')) if current_info.get('gender') in ["男", "女", "其他"] else 0)
                     new_id = st.text_input("身份證字號", current_info.get('id_card'))
                     new_birth = st.date_input("生日", value=default_birth, min_value=datetime(1900, 1, 1), max_value=datetime.now())
-                    new_photo = st.text_input("照片連結 (URL)", current_info.get('photo_url'), placeholder="請輸入圖片網址 (https://...)")
                 with c2:
                     new_dept = st.text_input("部門", current_info.get('dept'))
                     new_title = st.text_input("職稱", current_info.get('title'))
@@ -548,8 +548,7 @@ def main():
                         'birthday': str(new_birth), 'dept': new_dept, 'title': new_title,
                         'onboard_date': str(new_onboard), 'status': new_status,
                         'phone': new_phone, 'mobile': new_mobile, 'email': new_email,
-                        'address': new_addr, 'school': new_school, 'resign_date': new_resign,
-                        'photo_url': new_photo
+                        'address': new_addr, 'school': new_school, 'resign_date': new_resign
                     }
                     update_user_profile(updated_data)
                     st.success("資料已更新！請切換到「預覽與列印」分頁查看。")
@@ -557,9 +556,8 @@ def main():
                     st.rerun()
 
         with tab_print:
-            st.info("💡 說明：按下綠色按鈕後，會開啟列印視窗。該視窗會自動隱藏側邊欄和其他按鈕，只顯示表格。")
+            st.info("💡 提示：請按下方按鈕列印。建議列印設定選擇「A4」且無邊界。")
             html_code = generate_a4_html(current_info)
-            # 這裡透過 components.html 來注入按鈕功能，確保 JS 執行
             components.html(html_code, height=1150, scrolling=True)
 
     elif menu == "主管審核":
